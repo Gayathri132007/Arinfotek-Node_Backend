@@ -484,6 +484,108 @@ async function offReason(day) {
   return "";
 }
 
+// ================= OVERALL ATTENDANCE REPORT =================
+
+app.get("/attendance", auth, async (req, res) => {
+  try {
+    const today = todayIST();
+
+    const { rows: registrations } = await pool.query(
+      `SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS joined
+       FROM registrations
+       WHERE id = $1`,
+      [req.userId]
+    );
+
+    if (!registrations.length) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const joined = registrations[0].joined;
+
+    const { rows: attendanceRows } = await pool.query(
+      `SELECT
+         TO_CHAR(attendance_date, 'YYYY-MM-DD') AS date,
+         status,
+         check_in_time,
+         distance_m
+       FROM attendance
+       WHERE registration_id = $1
+         AND attendance_date BETWEEN $2 AND $3
+       ORDER BY attendance_date DESC`,
+      [req.userId, joined, today]
+    );
+
+    const { rows: holidayRows } = await pool.query(
+      `SELECT TO_CHAR(holiday_date, 'YYYY-MM-DD') AS date
+       FROM public_holidays
+       WHERE holiday_date BETWEEN $1 AND $2`,
+      [joined, today]
+    );
+
+    const attendanceMap = new Map(
+      attendanceRows.map(row => [row.date, row])
+    );
+
+    const holidaySet = new Set(
+      holidayRows.map(row => row.date)
+    );
+
+    let total = 0;
+    let attended = 0;
+
+    const start = new Date(`${joined}T00:00:00Z`);
+    const end = new Date(`${today}T00:00:00Z`);
+
+    for (
+      let date = new Date(start);
+      date <= end;
+      date.setUTCDate(date.getUTCDate() + 1)
+    ) {
+      const dateString = date.toISOString().slice(0, 10);
+      const day = date.getUTCDay();
+
+      if (day === 0 || day === 6 || holidaySet.has(dateString)) {
+        continue;
+      }
+
+      total++;
+
+      const record = attendanceMap.get(dateString);
+
+      if (record && record.status === "PRESENT") {
+        attended++;
+      }
+    }
+
+    const percentage =
+      total > 0 ? Number(((attended / total) * 100).toFixed(1)) : 0;
+
+    const history = attendanceRows.map(row => ({
+      date: row.date,
+      subject: "Company Attendance",
+      status: row.status,
+      time: fmt(row.check_in_time),
+      distance_m: Number(row.distance_m)
+    }));
+
+    return res.json({
+      total,
+      attended,
+      percentage,
+      history
+    });
+
+  } catch (e) {
+    console.error("Attendance report error:", e.message);
+
+    return res.status(500).json({
+      error: e.message || "Could not load attendance report"
+    });
+  }
+});
+
+
 // GET /attendance/calendar?year=2026&month=11
 app.get("/attendance/calendar", auth, async (req, res) => {
   const today = todayIST();
