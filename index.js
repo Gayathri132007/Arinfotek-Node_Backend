@@ -1014,6 +1014,15 @@ app.post("/attendance/mark", auth, async (req, res) => {
         ? "PRESENT"
         : "ABSENT";
 
+        if (status !== "PRESENT") {
+  return res.status(200).json({
+    success: false,
+    status: "ABSENT",
+    distance_m,
+    message: `You are ${distance_m} m away from AR INFOTEK (allowed: ${allowedRadius} m). Move closer and try again.`
+  });
+}
+
     await pool.query(
       `INSERT INTO attendance
        (registration_id, company_id, attendance_date, status,
