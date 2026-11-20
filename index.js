@@ -487,6 +487,66 @@ async function offReason(day) {
   return "";
 }
 
+// GET /attendance - VIEW ATTENDANCE REPORT
+app.get("/attendance", auth, async (req, res) => {
+  try {
+    const { rows: counts } = await pool.query(
+      `SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE UPPER(status) = 'PRESENT')::int AS attended,
+        COUNT(*) FILTER (WHERE UPPER(status) = 'ABSENT')::int AS absent
+       FROM attendance
+       WHERE registration_id = $1`,
+      [req.userId]
+    );
+
+    const { rows: records } = await pool.query(
+      `SELECT
+        TO_CHAR(attendance_date, 'DD Mon YYYY') AS date,
+        UPPER(status) AS status,
+        check_in_time
+       FROM attendance
+       WHERE registration_id = $1
+       ORDER BY attendance_date DESC
+       LIMIT 20`,
+      [req.userId]
+    );
+
+    const total = Number(counts[0]?.total || 0);
+    const attended = Number(counts[0]?.attended || 0);
+    const absent = Number(counts[0]?.absent || 0);
+
+    const percentage = total > 0
+      ? Math.round((attended / total) * 100)
+      : 0;
+
+    return res.json({
+      success: true,
+      percentage: percentage,
+      attended: attended,
+      absent: absent,
+      total: total,
+      history: records.map((record) => ({
+        date: record.date,
+        subject: "Company Attendance",
+        status: record.status === "PRESENT"
+          ? "Present"
+          : "Absent",
+        time: fmt(record.check_in_time),
+      })),
+    });
+
+  } catch (e) {
+    console.error("GET /attendance error:", e);
+
+    return res.status(500).json({
+      error: "Could not load attendance",
+      details: e.message,
+    });
+  }
+});
+
+
 // GET /attendance/calendar?year=2026&month=11
 app.get("/attendance/calendar", auth, async (req, res) => {
   const today = todayIST();
