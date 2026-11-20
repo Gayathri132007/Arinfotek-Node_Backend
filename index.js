@@ -484,108 +484,6 @@ async function offReason(day) {
   return "";
 }
 
-// ================= OVERALL ATTENDANCE REPORT =================
-
-app.get("/attendance", auth, async (req, res) => {
-  try {
-    const today = todayIST();
-
-    const { rows: registrations } = await pool.query(
-      `SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS joined
-       FROM registrations
-       WHERE id = $1`,
-      [req.userId]
-    );
-
-    if (!registrations.length) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const joined = registrations[0].joined;
-
-    const { rows: attendanceRows } = await pool.query(
-      `SELECT
-         TO_CHAR(attendance_date, 'YYYY-MM-DD') AS date,
-         status,
-         check_in_time,
-         distance_m
-       FROM attendance
-       WHERE registration_id = $1
-         AND attendance_date BETWEEN $2 AND $3
-       ORDER BY attendance_date DESC`,
-      [req.userId, joined, today]
-    );
-
-    const { rows: holidayRows } = await pool.query(
-      `SELECT TO_CHAR(holiday_date, 'YYYY-MM-DD') AS date
-       FROM public_holidays
-       WHERE holiday_date BETWEEN $1 AND $2`,
-      [joined, today]
-    );
-
-    const attendanceMap = new Map(
-      attendanceRows.map(row => [row.date, row])
-    );
-
-    const holidaySet = new Set(
-      holidayRows.map(row => row.date)
-    );
-
-    let total = 0;
-    let attended = 0;
-
-    const start = new Date(`${joined}T00:00:00Z`);
-    const end = new Date(`${today}T00:00:00Z`);
-
-    for (
-      let date = new Date(start);
-      date <= end;
-      date.setUTCDate(date.getUTCDate() + 1)
-    ) {
-      const dateString = date.toISOString().slice(0, 10);
-      const day = date.getUTCDay();
-
-      if (day === 0 || day === 6 || holidaySet.has(dateString)) {
-        continue;
-      }
-
-      total++;
-
-      const record = attendanceMap.get(dateString);
-
-      if (record && record.status === "PRESENT") {
-        attended++;
-      }
-    }
-
-    const percentage =
-      total > 0 ? Number(((attended / total) * 100).toFixed(1)) : 0;
-
-    const history = attendanceRows.map(row => ({
-      date: row.date,
-      subject: "Company Attendance",
-      status: row.status,
-      time: fmt(row.check_in_time),
-      distance_m: Number(row.distance_m)
-    }));
-
-    return res.json({
-      total,
-      attended,
-      percentage,
-      history
-    });
-
-  } catch (e) {
-    console.error("Attendance report error:", e.message);
-
-    return res.status(500).json({
-      error: e.message || "Could not load attendance report"
-    });
-  }
-});
-
-
 // GET /attendance/calendar?year=2026&month=11
 app.get("/attendance/calendar", auth, async (req, res) => {
   const today = todayIST();
@@ -678,7 +576,7 @@ app.get("/attendance/calendar", auth, async (req, res) => {
     const reason = await offReason(today);
 
     return res.json({
-      company: { name: crows[0].company_name, radius_m: crows[0].radius_m },
+      company: { name: crows[0].company_name, radius_m: Number(crows[0].radius_m) || 30 },
       today: {
         date: today,
         status: t ? t.status : null,
@@ -767,18 +665,13 @@ app.post("/attendance/mark", auth, async (req, res) => {
       return res.json({ status: "PRESENT", message: "You are already marked PRESENT today." });
     }
 
-    const dist = distanceMeters(lat, lng, Number(c.latitude), Number(c.longitude));
-    const meters = Math.round(dist);
-    const status = dist <= c.radius_m ? "PRESENT" : "ABSENT";
+    const companyLat = Number(c.latitude) || 12.75432717;
+    const companyLng = Number(c.longitude) || 77.82871361;
+    const allowedRadius = Number(c.radius_m) || 30;
 
-    if (status !== "PRESENT") {
-      return res.status(200).json({
-        success: false,
-        status: "ABSENT",
-        distance_m: meters,
-        message: `You are ${meters} m away from ${c.company_name} (allowed: ${c.radius_m} m). Move closer and try again.`,
-      });
-    }
+    const dist = distanceMeters(lat, lng, companyLat, companyLng);
+    const meters = Math.round(dist);
+    const status = dist <= allowedRadius ? "PRESENT" : "ABSENT";
 
     await pool.query(
       `INSERT INTO attendance (registration_id, company_id, attendance_date, status, latitude, longitude, distance_m, accuracy_m)
@@ -794,10 +687,14 @@ app.post("/attendance/mark", auth, async (req, res) => {
     );
 
     return res.json({
+      success: status === "PRESENT",
       status,
       distance_m: meters,
-      radius_m: c.radius_m,
-      message: `Attendance marked PRESENT. You are ${meters} m from ${c.company_name}.`,
+      radius_m: allowedRadius,
+      message:
+        status === "PRESENT"
+          ? `Attendance marked PRESENT. You are ${meters} m from ${c.company_name}.`
+          : `Attendance marked ABSENT. You are ${meters} m away from ${c.company_name} (allowed: ${allowedRadius} m).`,
     });
   } catch (e) {
     console.error("DB error:", e.message);
